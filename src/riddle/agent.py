@@ -11,6 +11,14 @@ from .tools import web_fetch, web_search
 
 load_dotenv()
 
+# Map user-friendly key names to what Pydantic AI expects
+if os.environ.get("CLAUDE_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = os.environ["CLAUDE_API_KEY"]
+
+# Use GEMINI_API_KEY directly (Pydantic AI supports it), unset GOOGLE_API_KEY to avoid conflicts
+if os.environ.get("GEMINI_API_KEY"):
+    os.environ.pop("GOOGLE_API_KEY", None)
+
 SYSTEM_PROMPT = """You are a creative brainstorming partner. Your role is to:
 
 1. Generate and explore ideas freely with the user
