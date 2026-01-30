@@ -1,0 +1,34 @@
+[project]
+name = "riddle-diary"
+version = "0.1.0"
+description = "A creative brainstorming tool powered by LLMs"
+requires-python = ">=3.11"
+readme = "README.md"
+
+dependencies = [
+    "pydantic-ai>=0.1",
+    "typer>=0.12",
+    "rich>=13.0",
+    "httpx>=0.27",
+    "trafilatura>=1.12",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+tavily = ["tavily-python>=0.5"]
+analysis = ["pandas>=2.0", "matplotlib>=3.8"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+riddle = "riddle.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riddle"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
