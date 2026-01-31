@@ -14,7 +14,13 @@ from rich.table import Table
 
 from .agent import create_agent, run_brainstorm
 from .creativity import PRESETS, get_preset, get_temperature_for_provider
-from .session import delete_session, list_sessions, load_session, save_session
+from .session import (
+    delete_session,
+    generate_session_filename,
+    list_sessions,
+    load_session,
+    save_session,
+)
 
 app = typer.Typer(
     name="riddle",
@@ -105,6 +111,27 @@ def _reconstruct_message_history(serialized: list[dict[str, Any]]) -> list[Any]:
     return messages
 
 
+def _auto_save(
+    topic: str,
+    mode: str,
+    model: str,
+    message_history: list[Any],
+    session_filename: str,
+) -> None:
+    """Auto-save session after each turn."""
+    try:
+        save_session(
+            topic=topic,
+            mode=mode,
+            model=model,
+            message_history=message_history,
+            filename=session_filename,
+        )
+    except Exception:
+        # Silently fail auto-save to not interrupt the session
+        pass
+
+
 async def _brainstorm_loop(
     topic: str,
     mode: str,
@@ -115,7 +142,6 @@ async def _brainstorm_loop(
     """Async brainstorming loop."""
     current_mode = mode
     message_history: list[Any] = []
-    session_filename: str | None = None
 
     # Resume from saved session if specified
     if resume:
@@ -132,6 +158,9 @@ async def _brainstorm_loop(
             console.print(f"[red]Session not found: {resume}[/red]")
             console.print("[dim]Use /sessions to list available sessions[/dim]")
             return
+    else:
+        # Generate a session filename for new sessions
+        session_filename = generate_session_filename(topic)
 
     agent = create_agent(mode=current_mode, model=model)
     preset = get_preset(current_mode)
@@ -147,6 +176,8 @@ async def _brainstorm_loop(
             message_history=None,
         )
         print_response(response)
+        # Auto-save after initial response
+        _auto_save(topic, current_mode, model, message_history, session_filename)
 
     if one_shot:
         return
@@ -154,8 +185,9 @@ async def _brainstorm_loop(
     # Interactive loop
     console.print("[dim]Enter your thoughts, or:[/dim]")
     console.print("[dim]  /mode <name> - switch creativity mode[/dim]")
-    console.print("[dim]  /save [name] - save session[/dim]")
+    console.print("[dim]  /save [name] - rename session file[/dim]")
     console.print("[dim]  /quit - exit[/dim]")
+    console.print(f"[dim]Session: {session_filename}[/dim]")
     console.print()
 
     while True:
@@ -187,29 +219,35 @@ async def _brainstorm_loop(
                         current_mode = new_mode
                         preset = get_preset(current_mode)
                         print_mode_info(current_mode, model)
+                        # Save mode change
+                        _auto_save(topic, current_mode, model, message_history, session_filename)
                     else:
                         console.print(f"[red]Unknown mode: {new_mode}[/red]")
                 continue
 
             elif cmd == "save":
-                name = cmd_parts[1] if len(cmd_parts) > 1 else None
-                if name and not name.endswith(".json"):
-                    name = f"{name}.json"
-                filepath = save_session(
-                    topic=topic,
-                    mode=current_mode,
-                    model=model,
-                    message_history=message_history,
-                    filename=name or session_filename,
-                )
-                session_filename = filepath.name
-                console.print(f"[green]Session saved: {filepath.name}[/green]")
+                if len(cmd_parts) > 1:
+                    new_name = cmd_parts[1]
+                    if not new_name.endswith(".json"):
+                        new_name = f"{new_name}.json"
+                    # Save with new name
+                    filepath = save_session(
+                        topic=topic,
+                        mode=current_mode,
+                        model=model,
+                        message_history=message_history,
+                        filename=new_name,
+                    )
+                    session_filename = filepath.name
+                    console.print(f"[green]Session renamed to: {session_filename}[/green]")
+                else:
+                    console.print(f"[dim]Current session: {session_filename}[/dim]")
                 continue
 
             elif cmd == "help":
                 console.print("[dim]Commands:[/dim]")
                 console.print("[dim]  /mode <name> - switch mode (practical/balanced/creative/wild)[/dim]")
-                console.print("[dim]  /save [name] - save session to file[/dim]")
+                console.print("[dim]  /save <name> - rename session file[/dim]")
                 console.print("[dim]  /quit - exit session[/dim]")
                 continue
 
@@ -227,6 +265,9 @@ async def _brainstorm_loop(
             message_history=message_history,
         )
         print_response(response)
+
+        # Auto-save after each turn
+        _auto_save(topic, current_mode, model, message_history, session_filename)
 
 
 @app.command()
@@ -267,7 +308,7 @@ def sessions(
 
     saved = list_sessions()
     if not saved:
-        console.print("[dim]No saved sessions. Use /save during a brainstorm to save.[/dim]")
+        console.print("[dim]No saved sessions yet. Sessions are auto-saved during brainstorming.[/dim]")
         return
 
     table = Table(title="Saved Sessions")
