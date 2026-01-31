@@ -1,16 +1,20 @@
 """CLI entry point for RiddleDiary."""
 
 import asyncio
+import os
 from typing import Any
 
 import typer
+from pydantic_ai.messages import ModelRequest, ModelResponse
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.table import Table
 
-from .agent import create_agent, get_model_settings, run_brainstorm
-from .creativity import PRESETS, get_preset
+from .agent import create_agent, run_brainstorm
+from .creativity import PRESETS, get_preset, get_temperature_for_provider
+from .session import delete_session, list_sessions, load_session, save_session
 
 app = typer.Typer(
     name="riddle",
@@ -27,12 +31,18 @@ def print_response(response: str) -> None:
     console.print()
 
 
-def print_mode_info(mode: str) -> None:
+def print_mode_info(mode: str, model: str) -> None:
     """Print information about the current mode."""
     preset = get_preset(mode)
+    temp = get_temperature_for_provider(preset.creativity, model)
     console.print(
-        f"[dim]Mode: {mode} | Temperature: {preset.temperature} | Top-P: {preset.top_p}[/dim]"
+        f"[dim]Mode: {mode} | Temperature: {temp} | Top-P: {preset.top_p}[/dim]"
     )
+
+
+def get_default_model() -> str:
+    """Get the default model from environment or fallback."""
+    return os.environ.get("DEFAULT_MODEL", "anthropic:claude-sonnet-4-20250514")
 
 
 @app.command()
@@ -55,8 +65,16 @@ def brainstorm(
         "-1",
         help="Get a single response without entering interactive mode",
     ),
+    resume: str = typer.Option(
+        None,
+        "--resume",
+        "-r",
+        help="Resume from a saved session file",
+    ),
 ) -> None:
     """Start a brainstorming session on a topic."""
+    model = model or get_default_model()
+
     if mode not in PRESETS:
         console.print(f"[red]Unknown mode: {mode}[/red]")
         console.print(f"Available modes: {', '.join(PRESETS.keys())}")
@@ -69,31 +87,66 @@ def brainstorm(
             border_style="blue",
         )
     )
-    print_mode_info(mode)
+    print_mode_info(mode, model)
 
-    asyncio.run(_brainstorm_loop(topic, mode, model, one_shot))
+    asyncio.run(_brainstorm_loop(topic, mode, model, one_shot, resume))
+
+
+def _reconstruct_message_history(serialized: list[dict[str, Any]]) -> list[Any]:
+    """Reconstruct Pydantic AI message objects from serialized data."""
+    messages: list[Any] = []
+    for msg_data in serialized:
+        kind = msg_data.get("kind")
+        if kind == "request":
+            messages.append(ModelRequest.model_validate(msg_data))
+        elif kind == "response":
+            messages.append(ModelResponse.model_validate(msg_data))
+        # Skip unknown message types
+    return messages
 
 
 async def _brainstorm_loop(
     topic: str,
     mode: str,
-    model: str | None,
+    model: str,
     one_shot: bool,
+    resume: str | None = None,
 ) -> None:
     """Async brainstorming loop."""
-    agent = create_agent(mode=mode, model=model)
-    preset = get_preset(mode)
+    current_mode = mode
     message_history: list[Any] = []
+    session_filename: str | None = None
 
-    # Initial brainstorm
-    console.print("[dim]Thinking...[/dim]")
-    response, message_history = await run_brainstorm(
-        agent,
-        f"Let's brainstorm about: {topic}",
-        preset,
-        message_history=None,
-    )
-    print_response(response)
+    # Resume from saved session if specified
+    if resume:
+        try:
+            session = load_session(resume)
+            topic = session.topic
+            current_mode = session.mode
+            model = session.model
+            message_history = _reconstruct_message_history(session.message_history)
+            session_filename = resume if resume.endswith(".json") else f"{resume}.json"
+            console.print(f"[green]Resumed session: {topic}[/green]")
+            console.print(f"[dim]Messages loaded: {len(message_history)}[/dim]")
+        except FileNotFoundError:
+            console.print(f"[red]Session not found: {resume}[/red]")
+            console.print("[dim]Use /sessions to list available sessions[/dim]")
+            return
+
+    agent = create_agent(mode=current_mode, model=model)
+    preset = get_preset(current_mode)
+
+    # Initial brainstorm (skip if resuming)
+    if not resume:
+        console.print("[dim]Thinking...[/dim]")
+        response, message_history = await run_brainstorm(
+            agent,
+            f"Let's brainstorm about: {topic}",
+            preset,
+            model,
+            message_history=None,
+        )
+        print_response(response)
 
     if one_shot:
         return
@@ -101,10 +154,9 @@ async def _brainstorm_loop(
     # Interactive loop
     console.print("[dim]Enter your thoughts, or:[/dim]")
     console.print("[dim]  /mode <name> - switch creativity mode[/dim]")
+    console.print("[dim]  /save [name] - save session[/dim]")
     console.print("[dim]  /quit - exit[/dim]")
     console.print()
-
-    current_mode = mode
 
     while True:
         try:
@@ -134,14 +186,30 @@ async def _brainstorm_loop(
                     if new_mode in PRESETS:
                         current_mode = new_mode
                         preset = get_preset(current_mode)
-                        print_mode_info(current_mode)
+                        print_mode_info(current_mode, model)
                     else:
                         console.print(f"[red]Unknown mode: {new_mode}[/red]")
+                continue
+
+            elif cmd == "save":
+                name = cmd_parts[1] if len(cmd_parts) > 1 else None
+                if name and not name.endswith(".json"):
+                    name = f"{name}.json"
+                filepath = save_session(
+                    topic=topic,
+                    mode=current_mode,
+                    model=model,
+                    message_history=message_history,
+                    filename=name or session_filename,
+                )
+                session_filename = filepath.name
+                console.print(f"[green]Session saved: {filepath.name}[/green]")
                 continue
 
             elif cmd == "help":
                 console.print("[dim]Commands:[/dim]")
                 console.print("[dim]  /mode <name> - switch mode (practical/balanced/creative/wild)[/dim]")
+                console.print("[dim]  /save [name] - save session to file[/dim]")
                 console.print("[dim]  /quit - exit session[/dim]")
                 continue
 
@@ -155,20 +223,68 @@ async def _brainstorm_loop(
             agent,
             user_input,
             preset,
+            model,
             message_history=message_history,
         )
         print_response(response)
 
 
 @app.command()
-def modes() -> None:
+def modes(
+    model: str = typer.Option(
+        None,
+        "--model",
+        help="Show temperature values for a specific model",
+    ),
+) -> None:
     """List available creativity modes."""
-    console.print("\n[bold]Creativity Modes[/bold]\n")
+    model = model or get_default_model()
+    console.print(f"\n[bold]Creativity Modes[/bold] [dim](for {model})[/dim]\n")
     for name, preset in PRESETS.items():
+        temp = get_temperature_for_provider(preset.creativity, model)
         console.print(f"[bold cyan]{name}[/bold cyan]")
-        console.print(f"  Temperature: {preset.temperature}, Top-P: {preset.top_p}")
+        console.print(f"  Creativity: {preset.creativity} -> Temperature: {temp}, Top-P: {preset.top_p}")
         console.print(f"  [dim]{preset.prompt_suffix}[/dim]")
         console.print()
+
+
+@app.command()
+def sessions(
+    delete: str = typer.Option(
+        None,
+        "--delete",
+        "-d",
+        help="Delete a session by filename",
+    ),
+) -> None:
+    """List or manage saved sessions."""
+    if delete:
+        if delete_session(delete):
+            console.print(f"[green]Deleted: {delete}[/green]")
+        else:
+            console.print(f"[red]Session not found: {delete}[/red]")
+        return
+
+    saved = list_sessions()
+    if not saved:
+        console.print("[dim]No saved sessions. Use /save during a brainstorm to save.[/dim]")
+        return
+
+    table = Table(title="Saved Sessions")
+    table.add_column("Filename", style="cyan")
+    table.add_column("Topic", style="white")
+    table.add_column("Mode", style="green")
+    table.add_column("Updated", style="dim")
+
+    for filename, session in saved:
+        # Truncate topic if too long
+        topic_display = session.topic[:40] + "..." if len(session.topic) > 40 else session.topic
+        # Format date
+        updated = session.updated_at[:16].replace("T", " ")
+        table.add_row(filename, topic_display, session.mode, updated)
+
+    console.print(table)
+    console.print("\n[dim]Resume with: riddle brainstorm <topic> --resume <filename>[/dim]")
 
 
 if __name__ == "__main__":

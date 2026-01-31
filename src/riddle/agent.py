@@ -6,7 +6,7 @@ from typing import Any
 from dotenv import load_dotenv
 from pydantic_ai import Agent, ModelSettings
 
-from .creativity import CreativityPreset, get_preset
+from .creativity import CreativityPreset, get_preset, get_temperature_for_provider
 from .tools import web_fetch, web_search
 
 load_dotenv()
@@ -65,10 +65,19 @@ def create_agent(mode: str = "balanced", model: str | None = None) -> Agent[None
     return agent
 
 
-def get_model_settings(preset: CreativityPreset) -> ModelSettings:
-    """Get model settings for a creativity preset."""
+def get_model_settings(preset: CreativityPreset, model: str) -> ModelSettings:
+    """Get model settings for a creativity preset, mapped to the provider's range.
+
+    Args:
+        preset: The creativity preset
+        model: Model string (e.g., "anthropic:claude-sonnet-4-20250514")
+
+    Returns:
+        ModelSettings with provider-appropriate temperature
+    """
+    temperature = get_temperature_for_provider(preset.creativity, model)
     return ModelSettings(
-        temperature=preset.temperature,
+        temperature=temperature,
         top_p=preset.top_p,
     )
 
@@ -77,6 +86,7 @@ async def run_brainstorm(
     agent: Agent[None, str],
     prompt: str,
     preset: CreativityPreset,
+    model: str,
     message_history: list[Any] | None = None,
 ) -> tuple[str, list[Any]]:
     """Run a brainstorm turn.
@@ -85,6 +95,7 @@ async def run_brainstorm(
         agent: The brainstorming agent
         prompt: User's prompt
         preset: Creativity preset for model settings
+        model: Model string for provider-specific temperature mapping
         message_history: Previous conversation messages
 
     Returns:
@@ -93,7 +104,7 @@ async def run_brainstorm(
     result = await agent.run(
         prompt,
         message_history=message_history,
-        model_settings=get_model_settings(preset),
+        model_settings=get_model_settings(preset, model),
     )
 
     return result.output, result.all_messages()
