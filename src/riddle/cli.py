@@ -48,7 +48,7 @@ def print_mode_info(mode: str, model: str) -> None:
 
 def get_default_model() -> str:
     """Get the default model from environment or fallback."""
-    return os.environ.get("DEFAULT_MODEL", "anthropic:claude-sonnet-4-20250514")
+    return os.environ.get("DEFAULT_MODEL", "anthropic:claude-sonnet-4")
 
 
 @app.command()
@@ -63,7 +63,7 @@ def brainstorm(
     model: str = typer.Option(
         None,
         "--model",
-        help="LLM model to use (e.g., anthropic:claude-sonnet-4-20250514)",
+        help="LLM model (e.g., anthropic:claude-sonnet-4, openai:gpt-5.1, gemini:gemini-3-flash)",
     ),
     one_shot: bool = typer.Option(
         False,

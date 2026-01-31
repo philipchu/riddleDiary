@@ -51,7 +51,7 @@ def create_agent(mode: str = "balanced", model: str | None = None) -> Agent[None
         Configured Pydantic AI agent
     """
     preset = get_preset(mode)
-    model_name = model or os.environ.get("DEFAULT_MODEL", "anthropic:claude-sonnet-4-20250514")
+    model_name = model or os.environ.get("DEFAULT_MODEL", "anthropic:claude-sonnet-4")
 
     agent: Agent[None, str] = Agent(
         model_name,
